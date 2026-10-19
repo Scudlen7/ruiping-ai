@@ -1,0 +1,434 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ClassStatus {
+  active
+  archived
+}
+
+enum AnalysisStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+model Teacher {
+  id          Int      @id @default(autoincrement())
+  phoneNumber String   @unique
+  name        String
+  password    String
+  createdAt   DateTime @default(now())
+  /// Bumped on logout to invalidate every session token issued before.
+  tokenVersion Int     @default(0)
+
+  registrationCodeId Int?
+  registrationCode   RegistrationCode? @relation(fields: [registrationCodeId], references: [id])
+
+  // Relations
+  classes               Class[]
+  teacherKnowledgeAreas TeacherKnowledgeArea[]
+  teachingMaterials     TeachingMaterial[]
+
+  @@map("teachers")
+}
+
+/// Teacher registration invitation codes, managed with `pnpm codes` (scripts/registration-codes.ts).
+model RegistrationCode {
+  id        Int       @id @default(autoincrement())
+  code      String    @unique
+  note      String?
+  maxUses   Int       @default(1)
+  usedCount Int       @default(0)
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  teachers Teacher[]
+
+  @@map("registration_codes")
+}
+
+model Parent {
+  id          Int      @id @default(autoincrement())
+  phoneNumber String   @unique
+  name        String
+  password    String
+  createdAt   DateTime @default(now())
+  /// Bumped on logout to invalidate every session token issued before.
+  tokenVersion Int     @default(0)
+
+  // Relations
+  children        ParentStudent[]
+  bindingRequests ParentBindingRequest[]
+  familyInvites   FamilyInvite[]
+
+  @@map("parents")
+}
+
+/// A parent's link to a child; a child may have several parents (see MAX_PARENTS_PER_STUDENT).
+model ParentStudent {
+  id        Int      @id @default(autoincrement())
+  parentId  Int
+  studentId Int
+  /// How the parent relates to the child, e.g. 爸爸 / 妈妈 / 爷爷 (free text, optional).
+  relation  String?
+  createdAt DateTime @default(now())
+
+  parent  Parent  @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, studentId])
+  @@index([studentId])
+  @@map("parent_students")
+}
+
+/// One-time code a linked parent shares with another family member to link the same child.
+model FamilyInvite {
+  id                Int       @id @default(autoincrement())
+  code              String    @unique
+  studentId         Int
+  createdByParentId Int
+  expiresAt         DateTime
+  usedAt            DateTime?
+  usedByParentId    Int?
+  createdAt         DateTime  @default(now())
+
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdBy Parent  @relation(fields: [createdByParentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+  @@map("family_invites")
+}
+
+enum BindingRequestStatus {
+  pending
+  approved
+  rejected
+}
+
+/// Request to link a child that already has parents, made without a family invite; the class teacher decides.
+model ParentBindingRequest {
+  id        Int                  @id @default(autoincrement())
+  parentId  Int
+  studentId Int
+  relation  String?
+  status    BindingRequestStatus @default(pending)
+  createdAt DateTime             @default(now())
+  decidedAt DateTime?
+
+  parent  Parent  @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId, status])
+  @@index([parentId, status])
+  @@map("parent_binding_requests")
+}
+
+model Student {
+  id         Int     @id @default(autoincrement())
+  name       String
+  studentId  String?
+  email      String?
+  schoolName String?
+  grade      String?
+  className  String?
+  specialAttention Boolean @default(false) // 特别关注标记
+  createdAt  DateTime @default(now())
+
+  // Relations
+  parents         ParentStudent[]
+  bindingRequests ParentBindingRequest[]
+  familyInvites   FamilyInvite[]
+  classId     Int?
+  class       Class?  @relation(fields: [classId], references: [id])
+  groupId     Int? // 学生小组ID
+  group       StudentGroup? @relation(fields: [groupId], references: [id])
+  assignments Assignment[]
+  exams       Exam[]
+  mistakes    Mistake[]
+  examMistakes ExamMistake[]
+  studentKnowledgeAreas StudentKnowledgeArea[]
+
+  @@map("students")
+}
+
+model Class {
+  id                          Int       @id @default(autoincrement())
+  name                        String
+  description                 String?
+  initialStudentCount         Int?
+  invitationCode              String    @unique
+  invitationCodeExpiresAt     DateTime
+  lastInvitationCodeGeneratedAt DateTime?
+  status                      ClassStatus @default(active)
+  finalStudentReportUrl       String?
+  finalClassReportUrl         String?
+  archivedAt                  DateTime?
+  createdAt                   DateTime  @default(now())
+
+  // Self-referential relationship for class promotion
+  promotedToClassId           Int? @unique
+  promotedToClass             Class? @relation("ClassPromotion", fields: [promotedToClassId], references: [id])
+  promotedFromClass           Class? @relation("ClassPromotion")
+
+  // Relations
+  teacherId   Int
+  teacher     Teacher @relation(fields: [teacherId], references: [id])
+  students    Student[]
+  assignments Assignment[]
+  exams       Exam[]
+  studentGroups StudentGroup[]
+
+  @@map("classes")
+}
+
+model Assignment {
+  id          Int      @id @default(autoincrement())
+  title       String
+  imageUrl    String
+  uploadedBy  String   // 'teacher' or 'parent'
+  createdAt   DateTime @default(now())
+
+  analysisStatus    AnalysisStatus @default(pending)
+  analysisError     String?
+  analysisStartedAt DateTime?
+  /// Set while the submission waits in the grading queue; pending rows without it are never picked up.
+  analysisQueuedAt  DateTime?
+  analysisAttempts  Int            @default(0)
+  analysisModelKey  String?
+
+  // Relations
+  studentId Int?
+  student   Student? @relation(fields: [studentId], references: [id])
+  classId   Int?
+  class     Class? @relation(fields: [classId], references: [id])
+  analysis  AssignmentAnalysis?
+
+  @@index([analysisStatus, analysisQueuedAt])
+  @@map("assignments")
+}
+
+model AssignmentAnalysis {
+  id          Int      @id @default(autoincrement())
+  score       Float?   // 0-100，所有统计只使用该字段
+  grade       String?  // 卷面上的原始成绩标注，仅用于展示
+  feedback    String
+  strengths   String[] // JSON array of strings
+  improvements String[] // JSON array of strings
+  modelUsed   String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  assignmentId Int        @unique
+  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  mistakes     Mistake[]
+
+  @@map("assignment_analyses")
+}
+
+model Exam {
+  id          Int      @id @default(autoincrement())
+  title       String
+  imageUrl    String
+  uploadedBy  String   // 'teacher' or 'parent'
+  createdAt   DateTime @default(now())
+
+  analysisStatus    AnalysisStatus @default(pending)
+  analysisError     String?
+  analysisStartedAt DateTime?
+  /// Set while the submission waits in the grading queue; pending rows without it are never picked up.
+  analysisQueuedAt  DateTime?
+  analysisAttempts  Int            @default(0)
+  analysisModelKey  String?
+
+  // Relations
+  studentId Int?
+  student   Student? @relation(fields: [studentId], references: [id])
+  classId   Int?
+  class     Class? @relation(fields: [classId], references: [id])
+  analysis  ExamAnalysis?
+
+  @@index([analysisStatus, analysisQueuedAt])
+  @@map("exams")
+}
+
+model ExamAnalysis {
+  id          Int      @id @default(autoincrement())
+  score       Float?   // 0-100，所有统计只使用该字段
+  grade       String?  // 卷面上的原始成绩标注，仅用于展示
+  feedback    String
+  strengths   String[] // JSON array of strings
+  improvements String[] // JSON array of strings
+  modelUsed   String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  examId Int        @unique
+  exam   Exam @relation(fields: [examId], references: [id])
+  mistakes     ExamMistake[]
+
+  @@map("exam_analyses")
+}
+
+model Mistake {
+  id          Int    @id @default(autoincrement())
+  description String
+  originalQuestionText     String? // The text of the original question that was answered incorrectly
+  originalQuestionImageUrl String? // URL to image of the original question if applicable
+  studentAnswer           String? // The student's incorrect answer
+  correctAnswer          String? // The correct answer for reference
+  createdAt   DateTime @default(now())
+
+  // Relations
+  analysisId      Int?
+  analysis        AssignmentAnalysis? @relation(fields: [analysisId], references: [id])
+  studentId       Int?
+  student         Student? @relation(fields: [studentId], references: [id])
+  knowledgeAreaId Int?
+  knowledgeArea   KnowledgeArea? @relation(fields: [knowledgeAreaId], references: [id])
+
+  @@map("mistakes")
+}
+
+model ExamMistake {
+  id          Int    @id @default(autoincrement())
+  description String
+  originalQuestionText     String? // The text of the original question that was answered incorrectly
+  originalQuestionImageUrl String? // URL to image of the original question if applicable
+  studentAnswer           String? // The student's incorrect answer
+  correctAnswer          String? // The correct answer for reference
+  createdAt   DateTime @default(now())
+
+  // Relations
+  analysisId      Int?
+  analysis        ExamAnalysis? @relation(fields: [analysisId], references: [id])
+  studentId       Int?
+  student         Student? @relation(fields: [studentId], references: [id])
+  knowledgeAreaId Int?
+  knowledgeArea   KnowledgeArea? @relation(fields: [knowledgeAreaId], references: [id])
+
+  @@map("exam_mistakes")
+}
+
+model TeachingMaterial {
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String?
+  contentType String   // 'document', 'image', 'text', 'video', etc.
+  fileUrl     String?  // URL to the uploaded file in OSS
+  textContent String?  // For direct text content
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  teacherId       Int
+  teacher         Teacher @relation(fields: [teacherId], references: [id])
+  knowledgeAreaId Int?
+  knowledgeArea   KnowledgeArea? @relation(fields: [knowledgeAreaId], references: [id])
+
+  @@map("teaching_materials")
+}
+
+model KnowledgeArea {
+  id          Int    @id @default(autoincrement())
+  name        String @unique
+  description String
+  createdAt   DateTime @default(now())
+
+  // Relations
+  mistakes              Mistake[]
+  examMistakes          ExamMistake[]
+  teacherKnowledgeAreas TeacherKnowledgeArea[]
+  studentKnowledgeAreas StudentKnowledgeArea[]
+  teachingMaterials     TeachingMaterial[]
+
+  @@map("knowledge_areas")
+}
+
+model TeacherKnowledgeArea {
+  id        Int @id @default(autoincrement())
+  teacherId Int
+  knowledgeAreaId Int
+  createdAt DateTime @default(now())
+
+  // Relations
+  teacher       Teacher       @relation(fields: [teacherId], references: [id])
+  knowledgeArea KnowledgeArea @relation(fields: [knowledgeAreaId], references: [id])
+
+  @@unique([teacherId, knowledgeAreaId])
+  @@map("teacher_knowledge_areas")
+}
+
+model StudentKnowledgeArea {
+  id              Int @id @default(autoincrement())
+  studentId       Int
+  knowledgeAreaId Int
+  mastery         Float    @default(0.5) // 0-1，等级由 src/lib/grading.ts 派生
+  evidenceCount   Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  // Relations
+  student       Student       @relation(fields: [studentId], references: [id])
+  knowledgeArea KnowledgeArea @relation(fields: [knowledgeAreaId], references: [id])
+
+  @@unique([studentId, knowledgeAreaId])
+  @@map("student_knowledge_areas")
+}
+
+model StudentGroup {
+  id          Int      @id @default(autoincrement())
+  name        String   // 小组名称，如 "第一组", "数学小组", "优秀小组"
+  description String?  // 小组描述
+  color       String   @default("blue") // 小组颜色标记
+  createdAt   DateTime @default(now())
+
+  // Relations
+  classId   Int
+  class     Class @relation(fields: [classId], references: [id])
+  students  Student[]
+
+  @@map("student_groups")
+}
+
+/// Fixed-window request counters shared by all server instances (see src/server/trpc/rateLimiter.ts).
+model RateLimitBucket {
+  key     String   @id
+  count   Int
+  resetAt DateTime
+
+  @@index([resetAt])
+  @@map("rate_limit_buckets")
+}
+
+/// One row per AI call (or reserved queued call); drives the per-user daily limit and token accounting.
+model AiUsage {
+  id             Int       @id @default(autoincrement())
+  actorType      String    // 'teacher' | 'parent'
+  actorId        Int
+  feature        String    // 'grading' | 'recognition' | 'questions' | 'class-progress' | 'batch-analysis'
+  status         String    @default("reserved") // 'reserved' | 'succeeded' | 'failed'
+  modelKey       String?
+  inputTokens    Int?
+  outputTokens   Int?
+  submissionKind String?
+  submissionId   Int?
+  error          String?
+  createdAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  @@index([actorType, actorId, createdAt])
+  @@index([submissionKind, submissionId])
+  @@map("ai_usage")
+}

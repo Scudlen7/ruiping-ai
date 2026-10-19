@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Local project documents kept out of the repository
+USER_MANUAL.md
+分析.md
