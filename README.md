@@ -138,11 +138,11 @@ flowchart TB
 
 ```mermaid
 erDiagram
-    Teacher ||--o{ Class : owns
+    Teacher ||--o{ "Class" : owns
     Teacher ||--o{ TeachingMaterial : uploads
     RegistrationCode ||--o{ Teacher : invites
-    Class ||--o{ Student : contains
-    Class ||--o{ StudentGroup : groups
+    "Class" ||--o{ Student : contains
+    "Class" ||--o{ StudentGroup : groups
     Student }o--o{ Parent : ParentStudent
     Student ||--o{ Assignment : submits
     Student ||--o{ Exam : takes
