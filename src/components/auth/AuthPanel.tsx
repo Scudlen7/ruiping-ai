@@ -85,7 +85,7 @@ export function AuthPanel() {
         if (role === "teacher") {
           const result = await loginTeacher.mutateAsync({ phoneNumber, password: form.password });
           signIn.teacher(result.teacher);
-          toast.success(`欢迎回来，${result.teacher.name}老师`);
+          toast.success(`欢迎回来，${result.teacher.name}`);
         } else {
           const result = await loginParent.mutateAsync({ phoneNumber, password: form.password });
           signIn.parent(result.parent);
